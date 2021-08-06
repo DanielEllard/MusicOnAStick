@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# Copyright 2021 by Daniel Ellard.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+IN_FNAME="$1"
+OUT_FNAME="$2"
+
+MUSIC_LIBRARY="$HOME/Music/iTunes/iTunes Music/"
+M4A_LIB="$HOME/UsbMusic/MP3Cache/"
+
+MUSIC_PREFIX=Music
+DST_LIB="/$MUSIC_PREFIX/"
+
+SCRIPTDIR="$(dirname $0)"
+
+find_new_path() {
+    local path="$1"
+
+    # FIXME TODO: change the suffix, if necessary
+
+    # NOTE: the sed command to put the .mp3 on the end
+    # must handle the case where there isn't any suffix
+    # on the original path
+    #
+    echo "$path" \
+	    | sed -e "s|^$MUSIC_LIBRARY|$DST_LIB|" \
+	    | sed -e 's/\.[^.]*$//' -e s'/$/.mp3/'
+}
+
+find_cache_path() {
+    local path="$1"
+
+    echo "$path" \
+	    | sed -e "s|^$MUSIC_LIBRARY|$M4A_LIB|" \
+	    | sed -e 's/\.[^.]*$//' -e s'/$/.mp3/'
+}
+
+convert_to_mp3_and_copy() {
+    local orig_path="$1"
+    local new_path="$2"
+
+    # Here we need to figure out how copy the
+    # file from the original path to the new path.
+    # This might require conversion (i.e. from m4a
+    # to mp3).
+    #
+    # TODO: treat the SILENCE file as special?
+    #
+
+    # If the old path doesn't exist, then there's
+    # been a fatal error; halt with failure
+    #
+    if [ ! -f "$orig_path" ]; then
+	echo "ERROR $0 orig_path [$orig_path] missing"
+	exit 1
+    fi
+
+    # If the new path already exists, then it's been
+    # copied already; halt with success
+    #
+    if [ -f "$new_path" ]; then
+	return
+    fi
+
+    local new_dir=$(dirname "$new_path")
+    if [ ! -d "$new_dir" ]; then
+	mkdir -p "$new_dir"
+	if [ $? -ne 0 ]; then
+	    echo "ERROR $0 creating [$new_dir]"
+	    exit 1
+	fi
+    fi
+
+    # if the orig_path is already an mp3, then
+    # just copy it to new_path
+    #
+    case "$orig_path" in
+	*.mp3)
+	    cp "$orig_path" "$new_dir/"
+	    if [ $? -ne 0 ]; then
+		echo "ERROR $0: cannot copy [$orig_path] to [$new_dir]"
+		exit 1
+	    fi
+	    return
+	    ;;
+    esac
+
+    # TODO: see whether we already have a converted
+    # copy of this file somewhere, so we don't have
+    # to do the conversion again (which is a slow
+    # process)
+
+    local cache_path=$(find_cache_path "$orig_path")
+    if [ ! -f "$cache_path" ]; then
+	local cache_dir=$(dirname "$cache_path")
+
+	if [ ! -d "$cache_dir" ]; then
+	    mkdir -p "$cache_dir"
+	fi
+
+	# Use convert-to-mp3 to convert or copy the
+	# file (the expectation is that most of the
+	# files will already be in the converted cache,
+        # in which case the conversion doesn't do
+	# anything)
+	#
+	echo "Converting $orig_path to $cache_path"
+	"$SCRIPTDIR"/convert-to-mp3 "$orig_path" "$cache_path"
+	if [ $? -ne 0 ]; then
+	    echo "$0 [$orig_path] oops during conversion"
+	    exit 1
+	fi
+    fi
+
+    cp "$cache_path" "$new_path"
+    if [ $? -ne 0 ]; then
+	echo "ERROR $0: cannot copy [$orig_path] to [$new_dir]"
+	exit 1
+    fi
+
+    return
+}
+
+process_lines() {
+    local count=1
+
+    while IFS= read -r line
+    do
+	case $line in 
+	    "#EXTM3U")
+		echo $line
+		;;
+	    "#EXTINF"*)
+		local countstr=$(printf '%.3d' $count)
+		count=$((count + 1))
+		local prefix=$(echo $line | sed -e 's/,.*$//')
+		local suffix=$(echo $line | sed -e 's/^[^,]*,//')
+		echo "$prefix,$countstr $suffix"
+		;;
+	    "$MUSIC_LIBRARY"*)
+		local origpath="$line"
+		local newpath=$(find_new_path "$origpath")
+
+		# TODO: copy the file from the cache of 
+		convert_to_mp3_and_copy "$origpath" "$OUT_DIR$newpath"
+
+		echo $newpath
+		;;
+	    *)
+		echo What $line
+		;;
+	esac
+	# printf '(%s)\n' "$line"
+    done
+}
+
+OUT_DIR="$HOME/UsbMusic/test"
+mkdir -p "$OUT_DIR"
+if [ ! -d "$OUT_DIR" ]; then
+    echo "ERROR: cannot create [$OUT_DIR]"
+    exit 1
+fi
+
+cat "$IN_FNAME" \
+	| tr '' '\n' \
+	| process_lines
